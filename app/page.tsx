@@ -54,6 +54,12 @@ export default function Home() {
   // 图片生成相关状态
   const [imageLoading, setImageLoading] = useState(false);
   const [generatedImage, setGeneratedImage] = useState("");
+  const [imageMeta, setImageMeta] = useState<{
+    displayModel?: string;
+    actualModel?: string;
+    requestedModel?: string;
+    modelChanged?: boolean;
+  } | null>(null);
   const [videoLoading, setVideoLoading] = useState(false);
   const [generatedVideo, setGeneratedVideo] = useState("");
   const imageRequestLockRef = useRef(false);
@@ -666,6 +672,23 @@ Example Output:
     return null;
   };
 
+  const buildDisplayImageSrc = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return "";
+    if (normalized.startsWith("data:image/")) return normalized;
+    if (/^https?:\/\//i.test(normalized)) {
+      return `/api/image-proxy?url=${encodeURIComponent(normalized)}`;
+    }
+    return normalized;
+  };
+
+  const readImageMeta = (value: any) => ({
+    displayModel: typeof value?.displayModel === "string" ? value.displayModel : "",
+    actualModel: typeof value?.actualModel === "string" ? value.actualModel : "",
+    requestedModel: typeof value?.requestedModel === "string" ? value.requestedModel : "",
+    modelChanged: Boolean(value?.modelChanged)
+  });
+
   // 修复 Base64 图片在 Chrome 中点击"查看原图"变成 about:blank 的问题
   const handleViewMedia = (url: string, isVideo: boolean) => {
     if (!url) return;
@@ -712,13 +735,14 @@ Example Output:
     lastImagePromptAtRef.current = now;
     // 如果没有配置自定义 Image API Key，才进行次数检查
     if (!imageApiKey) {
-      if (!checkLimit('video')) return;
+      if (!checkLimit('image')) return;
     }
     imageRequestLockRef.current = true;
 
     setImageLoading(true);
     setError("");
     setGeneratedImage("");
+    setImageMeta(null);
     
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 110000);
@@ -754,6 +778,7 @@ Example Output:
       const extractedImage = extractImageUrlFromAny(data);
       if (extractedImage) {
         setGeneratedImage(extractedImage);
+        setImageMeta(readImageMeta(data));
         if (!imageApiKey) deductLimit('image');
         return;
       }
@@ -801,6 +826,7 @@ Example Output:
     setError("");
     setGeneratedVideo("");
     setGeneratedImage("");
+    setImageMeta(null);
     videoRequestLockRef.current = true;
 
     const controller = new AbortController();
@@ -884,6 +910,7 @@ Example Output:
     setImageLoading(true);
     setError("");
     setGeneratedImage("");
+    setImageMeta(null);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000); // 优化：图生图超时改为60秒
@@ -1019,6 +1046,7 @@ The result must be **sharp, crystal-clear, and professional product photography 
       const extractedImage = extractImageUrlFromAny(data);
       if (extractedImage) {
         setGeneratedImage(extractedImage);
+        setImageMeta(readImageMeta(data));
         if (!imageApiKey) deductLimit('image');
         return;
       }
@@ -1053,6 +1081,7 @@ The result must be **sharp, crystal-clear, and professional product photography 
         const retryImage = extractImageUrlFromAny(retryData);
         if (retryImage) {
           setGeneratedImage(retryImage);
+          setImageMeta(readImageMeta(retryData));
           if (!imageApiKey) deductLimit('image');
           return;
         }
@@ -1086,6 +1115,7 @@ The result must be **sharp, crystal-clear, and professional product photography 
     setCopied("");
     setError("");
     setGeneratedImage(""); // 清除之前的图片
+    setImageMeta(null);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时
@@ -1286,6 +1316,8 @@ The result must be **sharp, crystal-clear, and professional product photography 
     setCopied(type);
     setTimeout(() => setCopied(""), 2000);
   };
+
+  const generatedImagePreviewSrc = generatedImage ? buildDisplayImageSrc(generatedImage) : "";
 
   return (
     <div className="min-h-screen bg-[#000000] text-zinc-100 font-sans selection:bg-indigo-500/30 overflow-hidden relative pb-20">
@@ -1786,11 +1818,17 @@ The result must be **sharp, crystal-clear, and professional product photography 
                   {isTxt2VideoMode ? "视频预览 / Preview" : "出图预览 / Preview"}
                 </span>
                 {(isTxt2VideoMode ? generatedVideo : generatedImage) && (
-                  <button onClick={() => handleViewMedia((isTxt2VideoMode ? generatedVideo : generatedImage) || '', isTxt2VideoMode)} className="text-zinc-400 hover:text-white transition-colors bg-white/5 px-3 py-1 rounded-lg">
+                  <button onClick={() => handleViewMedia((isTxt2VideoMode ? generatedVideo : generatedImagePreviewSrc) || '', isTxt2VideoMode)} className="text-zinc-400 hover:text-white transition-colors bg-white/5 px-3 py-1 rounded-lg">
                     {isTxt2VideoMode ? "查看视频 ↗" : "查看原图 ↗"}
                   </button>
                 )}
               </div>
+              {!isTxt2VideoMode && imageMeta?.displayModel && (
+                <div className="mb-4 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-[11px] text-zinc-400">
+                  当前展示模型：<span className="text-zinc-200">{imageMeta.displayModel}</span>
+                  {imageMeta.modelChanged && imageMeta.actualModel ? ` · 高峰期自动切换为 ${imageMeta.actualModel}` : ""}
+                </div>
+              )}
 
               {/* Generate Image Button */}
               {!isVideoMode && !isTxt2VideoMode && result && !isImg2ImgMode && (
@@ -1838,10 +1876,10 @@ The result must be **sharp, crystal-clear, and professional product photography 
                     <p className="text-[10px] font-mono tracking-widest opacity-30 mt-2">No video generated yet</p>
                   </div>
                 )
-              ) : generatedImage ? (
+              ) : generatedImagePreviewSrc ? (
                 <div className="w-full relative rounded-2xl overflow-hidden border border-white/10 bg-black/40 flex justify-center items-center shadow-inner group" style={imagePreviewStyle}>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={generatedImage} alt="Generated" className="w-full h-full object-contain absolute inset-0 transition-transform duration-700 group-hover:scale-105" />
+                  <img src={generatedImagePreviewSrc} alt="Generated" loading="eager" referrerPolicy="no-referrer" className="w-full h-full object-contain absolute inset-0 transition-transform duration-700 group-hover:scale-105" />
                 </div>
               ) : (
                 <div className="w-full flex flex-col items-center justify-center text-zinc-600 border-2 border-dashed border-white/5 rounded-2xl bg-black/20 relative overflow-hidden" style={imagePreviewStyle}>

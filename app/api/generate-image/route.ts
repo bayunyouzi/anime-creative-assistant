@@ -69,7 +69,7 @@ const normalizeIdempotencyKey = (raw: string | null) => {
 
 const cleanupExpiredIdempotency = () => {
   const now = Date.now();
-  for (const [key, payload] of idempotencyCache.entries()) {
+  for (const [key, payload] of Array.from(idempotencyCache.entries())) {
     if (payload.expiresAt <= now) {
       idempotencyCache.delete(key);
     }
@@ -289,7 +289,7 @@ const extractApiErrorMessage = (status: number, responseText: string): ErrorResp
   }
 
   // 检测配额耗尽
-  if (isQuotaExhaustedError(responseText)) {
+  if (isQuotaExhaustedError(status, responseText)) {
     return {
       errorCode: ERROR_CODES.API_QUOTA_EXCEEDED,
       errorMessage: '服务暂时不可用，请稍后再试',
@@ -375,6 +375,36 @@ const isRenderableImageRef = (value: unknown): value is string => {
   if (text.length > 1000 && !text.includes(' ') && /^[a-zA-Z0-9+/]+={0,2}$/.test(text.substring(0, 100))) return true;
   return false;
 };
+
+const IMAGE_MODEL_DISPLAY_NAME = "grok-imagine-image";
+
+const getImageModelDisplayName = (model: string | null | undefined) => {
+  const normalized = String(model || "").trim().toLowerCase();
+  if (!normalized) return "";
+  if (
+    normalized === "grok-imagine-image" ||
+    normalized === "grok-imagine-1.0" ||
+    normalized === "grok-imagine-1.0-fast" ||
+    normalized === "grok-imagine-1.0-edit"
+  ) {
+    return IMAGE_MODEL_DISPLAY_NAME;
+  }
+  return String(model);
+};
+
+const buildImageClientPayload = (
+  upstreamData: any,
+  imageUrl: string,
+  requestedModel: string,
+  actualModel: string
+) => ({
+  ...upstreamData,
+  imageUrl,
+  requestedModel,
+  actualModel,
+  displayModel: getImageModelDisplayName(actualModel || requestedModel),
+  modelChanged: Boolean(actualModel && requestedModel && actualModel !== requestedModel)
+});
 
 const extractImageUrlFromAny = (value: any): string | null => {
   if (!value) return null;
@@ -949,6 +979,7 @@ export async function POST(req: Request) {
       }
 
       let messages: any[] = [];
+      let finalImageUrl = image_url;
 
       // 根据是否有图片传入，决定使用什么 payload
       if (image_url && !isVideo) {
@@ -992,7 +1023,6 @@ export async function POST(req: Request) {
           return respond({ error: sizeValidation.error.errorMessage }, 400);
         }
 
-        let finalImageUrl = image_url;
         // 如果传入的是 http(s) 链接，我们将其转换为 base64
         if (image_url.startsWith('http')) {
           // 添加超时控制
@@ -1241,7 +1271,7 @@ export async function POST(req: Request) {
             type: isVideo ? 'VIDEO' : 'IMAGE',
             userId: user?.id ?? null,
             userEmail: user?.email ?? null,
-            model: finalModel,
+            model: activeModel,
             endpoint: finalEndpoint,
             requestPrompt: String(finalPrompt).slice(0, 2000),
             imageUrl: mediaUrl ? String(mediaUrl).slice(0, 2000) : null,
@@ -1277,7 +1307,7 @@ export async function POST(req: Request) {
           }
         }
 
-        return respond(finalData, 200);
+        return respond(buildImageClientPayload(finalData, mediaUrl!, finalModel, activeModel), 200);
       }
 
       // 原有的重试逻辑（作为fallback）
@@ -1345,7 +1375,7 @@ export async function POST(req: Request) {
                 n: 1
               };
             } else {
-              let retryMessages = [{ role: "user", content: reinforcedPrompt }];
+              let retryMessages: any[] = [{ role: "user", content: reinforcedPrompt }];
               if (isImg2Img && messages[0]?.content && Array.isArray(messages[0].content)) {
                 // Preserve the image_url block for img2img retries
                 const imageBlock = messages[0].content.find((c: any) => c.type === "image_url");
@@ -1455,7 +1485,7 @@ export async function POST(req: Request) {
           type: isVideo ? 'VIDEO' : 'IMAGE',
           userId: user?.id ?? null,
           userEmail: user?.email ?? null,
-          model: finalModel,
+          model: activeModel,
           endpoint: finalEndpoint,
           requestPrompt: String(finalPrompt).slice(0, 2000),
           imageUrl: mediaUrl ? String(mediaUrl).slice(0, 2000) : null,
@@ -1495,7 +1525,7 @@ export async function POST(req: Request) {
         return respond({ error: "未识别到图片结果，请稍后重试或更换提示词。" }, 502);
       }
 
-      return respond(finalData, 200);
+      return respond(buildImageClientPayload(finalData, mediaUrl!, finalModel, activeModel), 200);
 
     } catch (fetchError: any) {
       clearTimeout(timeoutId);
