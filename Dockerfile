@@ -75,5 +75,7 @@ USER nextjs
 
 EXPOSE 3000
 
-# Always use bundled SQLite at runtime to avoid external DATABASE_URL conflicts
-CMD ["sh", "-c", "export DATABASE_URL=file:/app/prisma/dev.db && if [ ! -f ./prisma/dev.db ]; then cp ./prisma-template/dev.db ./prisma/dev.db; fi && npx prisma db push && node server.js"]
+# Always use bundled SQLite at runtime to avoid external DATABASE_URL conflicts.
+# Do not run `prisma db push` on startup: the existing persistent database may contain
+# historical columns/tables and Prisma will refuse destructive changes, causing crash loops.
+CMD ["sh", "-c", "export DATABASE_URL=file:/app/prisma/dev.db && if [ ! -f ./prisma/dev.db ]; then cp ./prisma-template/dev.db ./prisma/dev.db; fi && node server.js"]
