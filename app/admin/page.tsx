@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { ADMIN_ARCHIVE_ROUTE_PREFIX } from "@/lib/mediaArchive";
 
 type Stats = {
   totalUsers: number;
@@ -64,6 +63,7 @@ const formatDate = (value?: string | null) => {
 const cardClass = "rounded-3xl border border-white/10 bg-white/[0.04] backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.25)]";
 const inputClass = "w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/40";
 const pillButtonClass = "rounded-full border border-white/10 bg-white/[0.05] px-4 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.1]";
+const ADMIN_ARCHIVE_ROUTE_PREFIX = "/api/admin/assets/";
 
 function StatCard({ label, value, accent = "text-white" }: { label: string; value: React.ReactNode; accent?: string }) {
   return (
