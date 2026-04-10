@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { ADMIN_ARCHIVE_ROUTE_PREFIX } from "@/lib/mediaArchive";
 
 type Stats = {
   totalUsers: number;
@@ -138,6 +139,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [authToken, setAuthToken] = useState("");
   const [me, setMe] = useState<{ id: string; email: string } | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [users, setUsers] = useState<UserItem[]>([]);
@@ -171,6 +173,7 @@ export default function AdminPage() {
         setError("请先登录管理员账号");
         return;
       }
+      setAuthToken(token);
       const res = await fetch("/api/admin/overview", {
         headers: {
           Authorization: `Bearer ${token}`
@@ -249,7 +252,12 @@ export default function AdminPage() {
   };
 
   const buildAdminImageSrc = (item: { imageUrl?: string | null }) => {
-    return normalizeImageRef(item.imageUrl);
+    const normalized = normalizeImageRef(item.imageUrl);
+    if (!normalized) return "";
+    if (normalized.startsWith(ADMIN_ARCHIVE_ROUTE_PREFIX) && authToken) {
+      return `${normalized}?token=${encodeURIComponent(authToken)}`;
+    }
+    return normalized;
   };
 
   const sidebarItems = [

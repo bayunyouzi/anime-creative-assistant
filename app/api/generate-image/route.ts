@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 import { isQuotaExhaustedError } from './quota';
 import { getVideoQuotaForUser } from '@/lib/videoQuota';
+import { ADMIN_ARCHIVE_ROUTE_PREFIX, archiveImageForAdmin, deleteArchivedImage, trimArchiveFiles } from '@/lib/mediaArchive';
 
 // 错误码常量定义
 const ERROR_CODES = {
@@ -57,6 +58,7 @@ const IDEMPOTENCY_TTL_MS = 12000;
 type CachedJsonPayload = { body: any; status: number; expiresAt: number };
 const idempotencyCache = new Map<string, CachedJsonPayload>();
 const idempotencyInFlight = new Map<string, Promise<CachedJsonPayload>>();
+const ADMIN_IMAGE_GALLERY_LIMIT = 200;
 
 const normalizeIdempotencyKey = (raw: string | null) => {
   if (!raw) return "";
@@ -86,6 +88,32 @@ const getChinaDayRange = () => {
     start: new Date(dayStartUtcMs),
     end: new Date(dayStartUtcMs + 24 * 60 * 60 * 1000)
   };
+};
+
+const trimAdminImageGallery = async () => {
+  const staleLogs = await prisma.generationLog.findMany({
+    where: {
+      type: 'IMAGE',
+      success: true,
+      imageUrl: { startsWith: ADMIN_ARCHIVE_ROUTE_PREFIX }
+    },
+    orderBy: { createdAt: 'desc' },
+    skip: ADMIN_IMAGE_GALLERY_LIMIT,
+    select: {
+      id: true,
+      imageUrl: true
+    }
+  });
+
+  for (const log of staleLogs) {
+    await deleteArchivedImage(log.imageUrl).catch(() => {});
+    await prisma.generationLog.update({
+      where: { id: log.id },
+      data: { imageUrl: null }
+    }).catch(() => {});
+  }
+
+  await trimArchiveFiles(ADMIN_IMAGE_GALLERY_LIMIT).catch(() => {});
 };
 
 const normalizeEndpoint = (raw: string | undefined, fallback: string, routeKind: "image" | "video") => {
@@ -1208,7 +1236,7 @@ export async function POST(req: Request) {
         clearTimeout(timeoutId);
 
         const responseText = String(finalData?.choices?.[0]?.message?.content ?? '').slice(0, 2000);
-        await prisma.generationLog.create({
+        const savedLog = await prisma.generationLog.create({
           data: {
             type: isVideo ? 'VIDEO' : 'IMAGE',
             userId: user?.id ?? null,
@@ -1221,6 +1249,16 @@ export async function POST(req: Request) {
             success: true
           }
         });
+        if (!isVideo && mediaUrl) {
+          const archivedUrl = await archiveImageForAdmin(String(mediaUrl)).catch(() => null);
+          if (archivedUrl) {
+            await prisma.generationLog.update({
+              where: { id: savedLog.id },
+              data: { imageUrl: archivedUrl }
+            }).catch(() => {});
+            await trimAdminImageGallery().catch(() => {});
+          }
+        }
 
         // 生成成功后，如果使用的是默认 Key，则更新用户的限制数据
         if (!apiKey) {
@@ -1412,7 +1450,7 @@ export async function POST(req: Request) {
       }
 
       const responseText = String(finalData?.choices?.[0]?.message?.content ?? '').slice(0, 2000);
-      await prisma.generationLog.create({
+      const savedLog = await prisma.generationLog.create({
         data: {
           type: isVideo ? 'VIDEO' : 'IMAGE',
           userId: user?.id ?? null,
@@ -1425,6 +1463,16 @@ export async function POST(req: Request) {
           success: true
         }
       });
+      if (!isVideo && mediaUrl) {
+        const archivedUrl = await archiveImageForAdmin(String(mediaUrl)).catch(() => null);
+        if (archivedUrl) {
+          await prisma.generationLog.update({
+            where: { id: savedLog.id },
+            data: { imageUrl: archivedUrl }
+          }).catch(() => {});
+          await trimAdminImageGallery().catch(() => {});
+        }
+      }
       
       // 生成成功后，如果使用的是默认 Key，则更新用户的限制数据
       if (!apiKey) {
