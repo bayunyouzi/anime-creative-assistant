@@ -43,7 +43,7 @@ const DEFAULT_TXT2IMG_MODEL_NAME = DEFAULT_GROK2API_MODEL_NAME;
 
 const DEFAULT_IMG2IMG_API_KEY = DEFAULT_GROK2API_KEY;
 const DEFAULT_IMG2IMG_API_ENDPOINT = DEFAULT_GROK2API_ENDPOINT;
-const DEFAULT_IMG2IMG_MODEL_NAME = "grok-imagine-image-lite"; // 使用 basic 等级模型（普通账号可用）
+const DEFAULT_IMG2IMG_MODEL_NAME = "grok-imagine-image-edit"; // 使用 basic 等级模型（普通账号可用）
 
 const DEFAULT_TXT2VIDEO_API_KEY = process.env.XAI_VIDEO_API_KEY || "xai-I1k5xdu1X9fAxANwIXP2sBSdrJZkravAOfbDffwv0P6YgGFj3u597hVEb6B3kvOeClJFNCkx7vQeJsnh";
 const DEFAULT_TXT2VIDEO_API_ENDPOINT = process.env.XAI_VIDEO_API_ENDPOINT || "https://api.x.ai/v1/videos/generations";
