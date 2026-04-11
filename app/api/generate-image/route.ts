@@ -43,7 +43,7 @@ const DEFAULT_TXT2IMG_MODEL_NAME = DEFAULT_GROK2API_MODEL_NAME;
 
 const DEFAULT_IMG2IMG_API_KEY = DEFAULT_GROK2API_KEY;
 const DEFAULT_IMG2IMG_API_ENDPOINT = DEFAULT_GROK2API_ENDPOINT;
-const DEFAULT_IMG2IMG_MODEL_NAME = "grok-imagine-image-edit";
+const DEFAULT_IMG2IMG_MODEL_NAME = "grok-imagine-image-lite"; // 使用 basic 等级模型（普通账号可用）
 
 const DEFAULT_TXT2VIDEO_API_KEY = process.env.XAI_VIDEO_API_KEY || "xai-I1k5xdu1X9fAxANwIXP2sBSdrJZkravAOfbDffwv0P6YgGFj3u597hVEb6B3kvOeClJFNCkx7vQeJsnh";
 const DEFAULT_TXT2VIDEO_API_ENDPOINT = process.env.XAI_VIDEO_API_ENDPOINT || "https://api.x.ai/v1/videos/generations";
@@ -1540,24 +1540,22 @@ export async function POST(req: Request) {
   } catch (error: any) {
     console.error("Image Generation API Error:", error);
 
-    // 记录详细错误日志到数据库
-    try {
-      await prisma.generationLog.create({
-        data: {
-          type: ERROR_CODES.INTERNAL_ERROR,
-          success: false,
-          errorMessage: '服务暂时异常，请稍后再试',
-          responseText: JSON.stringify({
-            errorCode: ERROR_CODES.INTERNAL_ERROR,
-            errorDetail: error instanceof Error ? error.message : String(error),
-            errorStack: error instanceof Error ? error.stack : undefined,
-            timestamp: new Date().toISOString()
-          })
-        }
-      });
-    } catch (logError) {
+    // 记录详细错误日志到数据库（异步，不阻塞响应）
+    prisma.generationLog.create({
+      data: {
+        type: ERROR_CODES.INTERNAL_ERROR,
+        success: false,
+        errorMessage: '服务暂时异常，请稍后再试',
+        responseText: JSON.stringify({
+          errorCode: ERROR_CODES.INTERNAL_ERROR,
+          errorDetail: error instanceof Error ? error.message : String(error),
+          errorStack: error instanceof Error ? error.stack : undefined,
+          timestamp: new Date().toISOString()
+        })
+      }
+    }).catch(logError => {
       console.error("Failed to log error to database:", logError);
-    }
+    });
 
     return respond({ error: '服务暂时异常，请稍后再试' }, 500);
   }
