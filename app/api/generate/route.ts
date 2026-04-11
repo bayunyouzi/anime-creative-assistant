@@ -76,7 +76,8 @@ export async function POST(req: Request) {
       const requestPrompt = Array.isArray(messages)
         ? String(messages.findLast?.((m: any) => m?.role === 'user')?.content ?? '')
         : null;
-      await prisma.generationLog.create({
+      // 使用非阻塞方式记录错误日志
+      prisma.generationLog.create({
         data: {
           type: 'PROMPT',
           userId: user?.id ?? null,
@@ -88,7 +89,7 @@ export async function POST(req: Request) {
           errorMessage: `API Error: ${response.status}`,
           responseText: errorText.slice(0, 2000)
         }
-      });
+      }).catch(err => console.error('[generate] Failed to log error:', err));
       const lowered = errorText.toLowerCase();
       const isCloudflareChallenge =
         lowered.includes("just a moment") ||
@@ -117,7 +118,8 @@ export async function POST(req: Request) {
       ? String(messages.findLast?.((m: any) => m?.role === 'user')?.content ?? '')
       : null;
     const responseText = String(data?.choices?.[0]?.message?.content ?? '').slice(0, 2000);
-    await prisma.generationLog.create({
+    // 使用非阻塞方式记录日志,避免超时
+    prisma.generationLog.create({
       data: {
         type: 'PROMPT',
         userId: user?.id ?? null,
@@ -128,7 +130,7 @@ export async function POST(req: Request) {
         responseText,
         success: true
       }
-    });
+    }).catch(err => console.error('[generate] Failed to log generation:', err));
     if (user?.id) {
       await prisma.user.update({
         where: { id: user.id },

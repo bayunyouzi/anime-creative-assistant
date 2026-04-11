@@ -11,6 +11,12 @@ export const prisma =
         url: process.env.DATABASE_URL || 'file:./prisma/dev.db',
       },
     },
+    // 增加超时配置,解决 SQLite 操作超时问题
+    __internal: {
+      engine: {
+        requestTimeout: 30000, // 30秒超时
+      },
+    },
   });
 
 // 优雅关闭连接
