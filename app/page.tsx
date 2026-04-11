@@ -1123,9 +1123,9 @@ The result must be **sharp, crystal-clear, and professional product photography 
 
     // 硬扛方案：前端直连默认配置 (与生图统一使用 grok2api)
     const FALLBACK_ENDPOINT = "http://43.133.211.120:8000/v1/chat/completions";
-    const FALLBACK_KEY = "7ttXeh0MTRWWfFZL";
+    const FALLBACK_KEY = "f5f8dc3f65454077b2fd6560";
     // 根据是否开启深度思考动态切换模型
-    const FALLBACK_MODEL = isVideoMode ? "grok-3" : (isDeepThinking ? "grok-4.20-beta" : "grok-3");
+    const FALLBACK_MODEL = isVideoMode ? "grok-4.20-0309-non-reasoning" : (isDeepThinking ? "grok-4.20-0309-reasoning" : "grok-4.20-0309-non-reasoning");
     
     const finalEndpoint = apiEndpoint || FALLBACK_ENDPOINT;
     const finalApiKey = apiKey || FALLBACK_KEY;
@@ -1299,7 +1299,7 @@ The result must be **sharp, crystal-clear, and professional product photography 
         errorMsg = "⚠️ 请求超时：AI 响应时间过长，请稍后重试。";
       } else if (errorMsg.includes("Failed to fetch")) {
         errorMsg = isVideoMode
-          ? "⚠️ 视频提示词接口连接失败，已切回 grok-3 默认模型，请重试。"
+          ? "⚠️ 视频提示词接口连接失败，已切回 grok-4.20-0309-non-reasoning 默认模型，请重试。"
           : "⚠️ 接口连接失败，请检查网络或稍后重试。";
       } else if (errorMsg.includes("content-moderated") || errorMsg.includes("moderation")) {
         errorMsg = "⚠️ 触发了 AI 安全审查机制。创意模式下生成大尺度内容有概率被拦截，请稍后再试或微调输入词。";

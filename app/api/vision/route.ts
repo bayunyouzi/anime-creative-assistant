@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 const API_KEY = "sk-w7Eit87AWrFGwLYLrIcSOgdDW204j0euC2Zlg5DACz4xx7nT";
 const API_ENDPOINT = "https://happyapi.org/v1/chat/completions";
-const VISION_MODEL = "grok-3";
+const VISION_MODEL = "grok-4.20-0309-non-reasoning";
 
 export async function POST(req: Request) {
   try {
@@ -14,7 +14,7 @@ export async function POST(req: Request) {
 
     const apiKey = "sk-w7Eit87AWrFGwLYLrIcSOgdDW204j0euC2Zlg5DACz4xx7nT";
     const apiEndpoint = "https://happyapi.org/v1/chat/completions";
-    const model = "grok-3";
+    const model = "grok-4.20-0309-non-reasoning";
 
     const systemPrompt = `You are an expert AI art prompter. Your task is to analyze the provided image and generate a high-quality, detailed text prompt based on the user's instruction.
     

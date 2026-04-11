@@ -3,14 +3,14 @@ import { prisma } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 
 // 这些配置现在只在服务器端运行，用户无法在浏览器中看到
-const DEFAULT_API_KEY = "7ttXeh0MTRWWfFZL";
+const DEFAULT_API_KEY = "f5f8dc3f65454077b2fd6560";
 const DEFAULT_API_ENDPOINT = "http://43.133.211.120:8000/v1/chat/completions";
-const DEFAULT_MODEL = "grok-3"; // 默认非深思模型
+const DEFAULT_MODEL = "grok-4.20-0309-non-reasoning"; // 默认非深思模型（快速响应）
 // 伪装成真实的浏览器请求头，绕过基础 WAF/Cloudflare
 const REQUEST_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 // 允许的模型白名单
-const ALLOWED_MODELS = ["grok-3", "grok-4.20-beta", "openai/gpt-oss-120b"];
+const ALLOWED_MODELS = ["grok-4.20-0309", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "openai/gpt-oss-120b"];
 
 const normalizeEndpoint = (raw: string) => {
   try {

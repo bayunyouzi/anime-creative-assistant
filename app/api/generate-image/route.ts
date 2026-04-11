@@ -34,16 +34,16 @@ interface ValidationResult {
 
 const DEFAULT_FREE_IMG_API_KEY = "JST8RZERNPOITTRG7GFCXDTQN3943PG6BZCJRTFV";
 const DEFAULT_BACKUP_IMG_API_KEY = "N90KLF8NOC73LUD5SWOWA5UAC9W7UPAXBLU9AGRW";
-const DEFAULT_GROK2API_KEY = process.env.GROK2API_KEY || "7ttXeh0MTRWWfFZL";
+const DEFAULT_GROK2API_KEY = process.env.GROK2API_KEY || "f5f8dc3f65454077b2fd6560";
 const DEFAULT_GROK2API_ENDPOINT = process.env.GROK2API_ENDPOINT || "http://43.133.211.120:8000/v1/chat/completions";
-const DEFAULT_GROK2API_MODEL_NAME = process.env.GROK2API_MODEL || "grok-imagine-1.0-fast";
+const DEFAULT_GROK2API_MODEL_NAME = process.env.GROK2API_MODEL || "grok-imagine-image-lite";
 const DEFAULT_TXT2IMG_API_KEY = DEFAULT_GROK2API_KEY;
 const DEFAULT_TXT2IMG_API_ENDPOINT = DEFAULT_GROK2API_ENDPOINT;
 const DEFAULT_TXT2IMG_MODEL_NAME = DEFAULT_GROK2API_MODEL_NAME;
 
 const DEFAULT_IMG2IMG_API_KEY = DEFAULT_GROK2API_KEY;
 const DEFAULT_IMG2IMG_API_ENDPOINT = DEFAULT_GROK2API_ENDPOINT;
-const DEFAULT_IMG2IMG_MODEL_NAME = "grok-imagine-1.0-edit";
+const DEFAULT_IMG2IMG_MODEL_NAME = "grok-imagine-image-edit";
 
 const DEFAULT_TXT2VIDEO_API_KEY = process.env.XAI_VIDEO_API_KEY || "xai-I1k5xdu1X9fAxANwIXP2sBSdrJZkravAOfbDffwv0P6YgGFj3u597hVEb6B3kvOeClJFNCkx7vQeJsnh";
 const DEFAULT_TXT2VIDEO_API_ENDPOINT = process.env.XAI_VIDEO_API_ENDPOINT || "https://api.x.ai/v1/videos/generations";
@@ -143,7 +143,7 @@ const isImagesGenerationEndpoint = (endpoint: string) => {
 
 const isGrokImagineModel = (model: string | undefined) => {
   if (!model) return false;
-  return /^grok-imagine-1\.0(?:-fast|-edit|-video)?$/i.test(model);
+  return /^grok-imagine-(?:image(?:-lite|-edit|-pro)?|video)$/i.test(model);
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -383,9 +383,9 @@ const getImageModelDisplayName = (model: string | null | undefined) => {
   if (!normalized) return "";
   if (
     normalized === "grok-imagine-image" ||
-    normalized === "grok-imagine-1.0" ||
-    normalized === "grok-imagine-1.0-fast" ||
-    normalized === "grok-imagine-1.0-edit"
+    normalized === "grok-imagine-image-lite" ||
+    normalized === "grok-imagine-image-edit" ||
+    normalized === "grok-imagine-image-pro"
   ) {
     return IMAGE_MODEL_DISPLAY_NAME;
   }
@@ -483,8 +483,8 @@ interface MergedError {
 
 // 并发请求开关配置（可通过环境变量控制）
 const CONCURRENT_CONFIG: ConcurrentConfig = {
-  enabled: process.env.ENABLE_CONCURRENT_REQUESTS !== 'false', // 默认启用
-  requestCount: 2 // 并发请求数量
+  enabled: false, // 禁用瀑布流并发请求
+  requestCount: 1 // 单次请求
 };
 
 // 请求包装器函数：将单个请求包装为Promise<ConcurrentResult>
@@ -662,6 +662,8 @@ export async function POST(req: Request) {
       ? defaultEndpoint
       : normalizeEndpoint(apiEndpoint, defaultEndpoint, "image");
     const finalModel = isVideo ? DEFAULT_TXT2VIDEO_MODEL_NAME : (modelName || defaultModel);
+    // 如果是图生图且用户没有指定模型，强制使用图生图专用模型
+    const actualModel = isImg2Img && !modelName ? DEFAULT_IMG2IMG_MODEL_NAME : finalModel;
     const useImagesGenerationApi = !isVideo && isImagesGenerationEndpoint(finalEndpoint);
     const canAutoSwitchImageKey = !apiKey && !isVideo && useImagesGenerationApi;
     if (canAutoSwitchImageKey) {
@@ -772,7 +774,7 @@ export async function POST(req: Request) {
           : finalPrompt;
 
         const videoPayload: Record<string, any> = {
-          model: finalModel,
+          model: actualModel,
           prompt: videoPrompt,
           duration: videoDuration
         };
@@ -802,7 +804,7 @@ export async function POST(req: Request) {
               type: 'VIDEO',
               userId: user?.id ?? null,
               userEmail: user?.email ?? null,
-              model: finalModel,
+              model: actualModel,
               endpoint: finalEndpoint,
               requestPrompt: String(finalPrompt).slice(0, 2000),
               success: false,
@@ -834,7 +836,7 @@ export async function POST(req: Request) {
               type: 'VIDEO',
               userId: user?.id ?? null,
               userEmail: user?.email ?? null,
-              model: finalModel,
+              model: actualModel,
               endpoint: finalEndpoint,
               requestPrompt: String(finalPrompt).slice(0, 2000),
               imageUrl: String(immediateVideoUrl).slice(0, 2000),
@@ -864,7 +866,7 @@ export async function POST(req: Request) {
               type: 'VIDEO',
               userId: user?.id ?? null,
               userEmail: user?.email ?? null,
-              model: finalModel,
+              model: actualModel,
               endpoint: finalEndpoint,
               requestPrompt: String(finalPrompt).slice(0, 2000),
               success: false,
@@ -898,7 +900,7 @@ export async function POST(req: Request) {
                 type: 'VIDEO',
                 userId: user?.id ?? null,
                 userEmail: user?.email ?? null,
-                model: finalModel,
+                model: actualModel,
                 endpoint: statusEndpoint,
                 requestPrompt: String(finalPrompt).slice(0, 2000),
                 success: false,
@@ -940,7 +942,7 @@ export async function POST(req: Request) {
                 type: 'VIDEO',
                 userId: user?.id ?? null,
                 userEmail: user?.email ?? null,
-                model: finalModel,
+                model: actualModel,
                 endpoint: finalEndpoint,
                 requestPrompt: String(finalPrompt).slice(0, 2000),
                 imageUrl: String(videoUrl).slice(0, 2000),
@@ -964,7 +966,7 @@ export async function POST(req: Request) {
               type: 'VIDEO',
               userId: user?.id ?? null,
               userEmail: user?.email ?? null,
-              model: finalModel,
+              model: actualModel,
               endpoint: statusEndpoint,
               requestPrompt: String(finalPrompt).slice(0, 2000),
               success: false,
@@ -1137,7 +1139,7 @@ export async function POST(req: Request) {
       let requestPayload: any;
       if (useImagesGenerationApi) {
         requestPayload = {
-          model: finalModel,
+          model: actualModel,
           prompt: finalPrompt,
           n: 1,
           response_format: "url",
@@ -1152,12 +1154,12 @@ export async function POST(req: Request) {
         }
       } else {
         requestPayload = {
-          model: finalModel,
+          model: actualModel,
           messages: messages,
           stream: false,
           max_tokens: 4096
         };
-        if (!isVideo && isGrokImagineModel(finalModel)) {
+        if (!isVideo && isGrokImagineModel(actualModel)) {
           requestPayload.image_config = {
             n: 1,
             size: `${aspectSize?.width ?? 1024}x${aspectSize?.height ?? 1024}`,
@@ -1228,7 +1230,7 @@ export async function POST(req: Request) {
       let didPayloadRetry = false;
       let didKeyRetry = false;
       let activePayload: any = requestPayload;
-      let activeModel = finalModel;
+      let activeModel = actualModel;
       let finalData: any = null;
       let mediaUrl: string | null = null;
       const maxNoImageRetry = !isVideo && !useImagesGenerationApi ? 2 : 0;
@@ -1307,7 +1309,7 @@ export async function POST(req: Request) {
           }
         }
 
-        return respond(buildImageClientPayload(finalData, mediaUrl!, finalModel, activeModel), 200);
+        return respond(buildImageClientPayload(finalData, mediaUrl!, actualModel, activeModel), 200);
       }
 
       // 原有的重试逻辑（作为fallback）
@@ -1422,9 +1424,9 @@ export async function POST(req: Request) {
           isGrokImagineModel(activeModel) &&
           response.status === 429 &&
           /rate_limit_exceeded|No available tokens/i.test(lastErrorText) &&
-          activeModel === "grok-imagine-1.0"
+          activeModel === "grok-imagine-image"
         ) {
-          activeModel = "grok-imagine-1.0-fast";
+          activeModel = "grok-imagine-image-lite";
           activePayload = {
             ...activePayload,
             model: activeModel,
@@ -1525,7 +1527,7 @@ export async function POST(req: Request) {
         return respond({ error: "未识别到图片结果，请稍后重试或更换提示词。" }, 502);
       }
 
-      return respond(buildImageClientPayload(finalData, mediaUrl!, finalModel, activeModel), 200);
+      return respond(buildImageClientPayload(finalData, mediaUrl!, actualModel, activeModel), 200);
 
     } catch (fetchError: any) {
       clearTimeout(timeoutId);
