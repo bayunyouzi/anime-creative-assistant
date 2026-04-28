@@ -1,16 +1,14 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
+import { parseApiError, logErrorAsync, buildErrorResponse, ErrorCode, validateModel } from '@/lib/errorHandler';
 
 // 这些配置现在只在服务器端运行，用户无法在浏览器中看到
 const DEFAULT_API_KEY = "f5f8dc3f65454077b2fd6560";
-const DEFAULT_API_ENDPOINT = "http://43.133.211.120:8000/v1/chat/completions";
+const DEFAULT_API_ENDPOINT = "http://124.156.219.145:8000/v1/chat/completions";
 const DEFAULT_MODEL = "grok-4.20-0309-non-reasoning"; // 默认非深思模型（快速响应）
 // 伪装成真实的浏览器请求头，绕过基础 WAF/Cloudflare
 const REQUEST_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-
-// 允许的模型白名单
-const ALLOWED_MODELS = ["grok-4.20-0309", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "openai/gpt-oss-120b"];
 
 const normalizeEndpoint = (raw: string) => {
   try {
@@ -49,9 +47,9 @@ export async function POST(req: Request) {
     if (useCustomConfig && !model) {
       return NextResponse.json({ error: "使用自定义提示词接口时，请填写模型名称" }, { status: 400 });
     }
-    if (!useCustomConfig && !ALLOWED_MODELS.includes(modelName)) {
-      console.warn(`[Security] Blocked attempt to use unauthorized model: ${modelName}. Falling back to default.`);
-      modelName = DEFAULT_MODEL;
+    const modelValidation = validateModel(modelName, 'prompt', useCustomConfig);
+    if (!modelValidation.valid && modelValidation.fallback) {
+      modelName = modelValidation.fallback;
     }
 
     const response = await fetch(apiEndpoint, {
@@ -73,35 +71,17 @@ export async function POST(req: Request) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      const requestPrompt = Array.isArray(messages)
-        ? String(messages.findLast?.((m: any) => m?.role === 'user')?.content ?? '')
-        : null;
-      // 使用非阻塞方式记录错误日志
-      prisma.generationLog.create({
-        data: {
-          type: 'PROMPT',
-          userId: user?.id ?? null,
-          userEmail: user?.email ?? null,
-          model: modelName,
-          endpoint: apiEndpoint,
-          requestPrompt,
-          success: false,
-          errorMessage: `API Error: ${response.status}`,
-          responseText: errorText.slice(0, 2000)
-        }
-      }).catch(err => console.error('[generate] Failed to log error:', err));
-      const lowered = errorText.toLowerCase();
-      const isCloudflareChallenge =
-        lowered.includes("just a moment") ||
-        lowered.includes("__cf_chl") ||
-        lowered.includes("cdn-cgi/challenge-platform");
-      if (isCloudflareChallenge) {
-        return NextResponse.json(
-          { error: "目标接口开启了 Cloudflare 人机验证，服务端请求被拦截。请更换为可服务端调用的 API 域名，或让提供方对白名单放行该接口路径。" },
-          { status: 502 }
-        );
-      }
-      return NextResponse.json({ error: `API Error: ${response.status} - ${errorText}` }, { status: response.status });
+      const error = parseApiError(response.status, errorText);
+      logErrorAsync(error, {
+        userId: user?.id,
+        userEmail: user?.email,
+        model: modelName,
+        endpoint: apiEndpoint,
+        requestPrompt: Array.isArray(messages)
+          ? String(messages.findLast?.((m: any) => m?.role === 'user')?.content ?? '')
+          : undefined
+      });
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
     }
 
     const responseTextRaw = await response.text();
@@ -140,10 +120,11 @@ export async function POST(req: Request) {
     return NextResponse.json(data);
 
   } catch (error: any) {
-    console.error("API Route Error:", error);
-    return NextResponse.json(
-      { error: error.message || "Internal Server Error" },
-      { status: 500 }
+    const err = buildErrorResponse(
+      ErrorCode.SYSTEM_INTERNAL_ERROR,
+      error instanceof Error ? error.message : String(error)
     );
+    logErrorAsync(err, {});
+    return NextResponse.json({ error: err.message }, { status: err.statusCode });
   }
 }

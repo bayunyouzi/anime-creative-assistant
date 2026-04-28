@@ -63,7 +63,6 @@ const formatDate = (value?: string | null) => {
 const cardClass = "rounded-3xl border border-white/10 bg-white/[0.04] backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.25)]";
 const inputClass = "w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/40";
 const pillButtonClass = "rounded-full border border-white/10 bg-white/[0.05] px-4 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.1]";
-const ADMIN_ARCHIVE_ROUTE_PREFIX = "/api/admin/assets/";
 
 function StatCard({ label, value, accent = "text-white" }: { label: string; value: React.ReactNode; accent?: string }) {
   return (
@@ -139,7 +138,6 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [authToken, setAuthToken] = useState("");
   const [me, setMe] = useState<{ id: string; email: string } | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [users, setUsers] = useState<UserItem[]>([]);
@@ -173,7 +171,6 @@ export default function AdminPage() {
         setError("请先登录管理员账号");
         return;
       }
-      setAuthToken(token);
       const res = await fetch("/api/admin/overview", {
         headers: {
           Authorization: `Bearer ${token}`
@@ -249,15 +246,6 @@ export default function AdminPage() {
     try {
       await navigator.clipboard.writeText(text);
     } catch {}
-  };
-
-  const buildAdminImageSrc = (item: { imageUrl?: string | null }) => {
-    const normalized = normalizeImageRef(item.imageUrl);
-    if (!normalized) return "";
-    if (normalized.startsWith(ADMIN_ARCHIVE_ROUTE_PREFIX) && authToken) {
-      return `${normalized}?token=${encodeURIComponent(authToken)}`;
-    }
-    return normalized;
   };
 
   const sidebarItems = [
@@ -362,7 +350,7 @@ export default function AdminPage() {
                           <button className="block w-full" onClick={() => setSelectedImage(item)}>
                             <MediaThumb
                               id={item.id}
-                              src={buildAdminImageSrc(item)}
+                              src={normalizeImageRef(item.imageUrl)}
                               alt="generated"
                               className="h-80 w-full rounded-2xl border border-white/10 object-cover"
                               brokenSet={brokenSet}
@@ -379,8 +367,8 @@ export default function AdminPage() {
                           <div className="mt-3 flex gap-2">
                             <button className={pillButtonClass} onClick={() => setSelectedImage(item)}>放大查看</button>
                             <button className={pillButtonClass} onClick={() => copyPrompt(item.requestPrompt)}>复制提示词</button>
-                            {buildAdminImageSrc(item) && (
-                              <a className={pillButtonClass} href={buildAdminImageSrc(item)} target="_blank" rel="noreferrer">
+                            {normalizeImageRef(item.imageUrl) && (
+                              <a className={pillButtonClass} href={normalizeImageRef(item.imageUrl)} target="_blank" rel="noreferrer">
                                 打开原图
                               </a>
                             )}
@@ -577,11 +565,11 @@ export default function AdminPage() {
                         {log.requestPrompt && (
                           <div className="mt-3 whitespace-pre-wrap break-all text-sm text-zinc-200">{log.requestPrompt}</div>
                         )}
-                        {buildAdminImageSrc(log) && (
+                        {normalizeImageRef(log.imageUrl) && (
                           <div className="mt-3 max-w-sm">
                             <MediaThumb
                               id={`log-${log.id}`}
-                              src={buildAdminImageSrc(log)}
+                              src={normalizeImageRef(log.imageUrl)}
                               alt="generated"
                               className="max-h-60 rounded-2xl border border-white/10"
                               brokenSet={brokenSet}
@@ -596,8 +584,8 @@ export default function AdminPage() {
                         )}
                         <div className="mt-3 flex gap-2">
                           <button className={pillButtonClass} onClick={() => copyPrompt(log.requestPrompt)}>复制提示词</button>
-                          {buildAdminImageSrc(log) && (
-                            <a className={pillButtonClass} href={buildAdminImageSrc(log)} target="_blank" rel="noreferrer">
+                          {normalizeImageRef(log.imageUrl) && (
+                            <a className={pillButtonClass} href={normalizeImageRef(log.imageUrl)} target="_blank" rel="noreferrer">
                               打开图片
                             </a>
                           )}
@@ -674,8 +662,8 @@ export default function AdminPage() {
                 </div>
                 <div className="flex gap-2">
                   <button className={pillButtonClass} onClick={() => copyPrompt(selectedImage.requestPrompt)}>复制提示词</button>
-                  {buildAdminImageSrc(selectedImage) && (
-                    <a className={pillButtonClass} href={buildAdminImageSrc(selectedImage)} target="_blank" rel="noreferrer">
+                  {normalizeImageRef(selectedImage.imageUrl) && (
+                    <a className={pillButtonClass} href={normalizeImageRef(selectedImage.imageUrl)} target="_blank" rel="noreferrer">
                       打开原图
                     </a>
                   )}
@@ -684,7 +672,7 @@ export default function AdminPage() {
               </div>
               <MediaThumb
                 id={`modal-${selectedImage.id}`}
-                src={buildAdminImageSrc(selectedImage)}
+                src={normalizeImageRef(selectedImage.imageUrl)}
                 alt="preview"
                 className="max-h-[72vh] w-full rounded-2xl bg-black object-contain"
                 brokenSet={brokenSet}

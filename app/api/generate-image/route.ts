@@ -3,49 +3,22 @@ import { prisma } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 import { isQuotaExhaustedError } from './quota';
 import { getVideoQuotaForUser } from '@/lib/videoQuota';
-import { ADMIN_ARCHIVE_ROUTE_PREFIX, archiveImageForAdmin, deleteArchivedImage, trimArchiveFiles } from '@/lib/mediaArchive';
-
-// 错误码常量定义
-const ERROR_CODES = {
-  IMG_FORMAT_INVALID: 'IMG_FORMAT_INVALID',
-  IMG_SIZE_EXCEEDED: 'IMG_SIZE_EXCEEDED',
-  IMG_URL_ACCESS_FAILED: 'IMG_URL_ACCESS_FAILED',
-  IMG_LOAD_TIMEOUT: 'IMG_LOAD_TIMEOUT',
-  API_QUOTA_EXCEEDED: 'API_QUOTA_EXCEEDED',
-  CF_CHALLENGE_REQUIRED: 'CF_CHALLENGE_REQUIRED',
-  API_TIMEOUT: 'API_TIMEOUT',
-  INTERNAL_ERROR: 'INTERNAL_ERROR'
-} as const;
-
-// 错误响应接口
-interface ErrorResponse {
-  errorCode: string;
-  errorMessage: string;
-  errorDetail: string;
-  shouldRetry: boolean;
-  retryAfter?: number;
-}
+import { parseApiError, logErrorAsync, buildErrorResponse, ErrorCode } from '@/lib/errorHandler';
 
 // 图片验证结果接口
 interface ValidationResult {
   valid: boolean;
-  error?: ErrorResponse;
+  error?: { errorCode: string; errorMessage: string; errorDetail: string; shouldRetry: boolean; retryAfter?: number };
 }
 
 const DEFAULT_FREE_IMG_API_KEY = "JST8RZERNPOITTRG7GFCXDTQN3943PG6BZCJRTFV";
 const DEFAULT_BACKUP_IMG_API_KEY = "N90KLF8NOC73LUD5SWOWA5UAC9W7UPAXBLU9AGRW";
 const DEFAULT_GROK2API_KEY = process.env.GROK2API_KEY || "f5f8dc3f65454077b2fd6560";
-const DEFAULT_GROK2API_ENDPOINT = process.env.GROK2API_ENDPOINT || "http://43.133.211.120:8000/v1/chat/completions";
+const DEFAULT_GROK2API_ENDPOINT = process.env.GROK2API_ENDPOINT || "http://124.156.219.145:8000/v1/chat/completions";
 const DEFAULT_GROK2API_MODEL_NAME = process.env.GROK2API_MODEL || "grok-imagine-image-lite";
 const DEFAULT_TXT2IMG_API_KEY = DEFAULT_GROK2API_KEY;
 const DEFAULT_TXT2IMG_API_ENDPOINT = DEFAULT_GROK2API_ENDPOINT;
 const DEFAULT_TXT2IMG_MODEL_NAME = DEFAULT_GROK2API_MODEL_NAME;
-
-// GPT-Image-2 模型配置
-const DEFAULT_GPT_IMAGE2_API_KEY = "f5f8dc3f65454077b2fd6560";
-const DEFAULT_GPT_IMAGE2_API_ENDPOINT = "https://gpt2.zeabur.app/v1";
-const DEFAULT_GPT_IMAGE2_MODEL_NAME = "gpt-image-2";
-const GPT_IMAGE2_DAILY_LIMIT = 50;
 
 const DEFAULT_IMG2IMG_API_KEY = DEFAULT_GROK2API_KEY;
 const DEFAULT_IMG2IMG_API_ENDPOINT = DEFAULT_GROK2API_ENDPOINT;
@@ -64,8 +37,6 @@ const IDEMPOTENCY_TTL_MS = 12000;
 type CachedJsonPayload = { body: any; status: number; expiresAt: number };
 const idempotencyCache = new Map<string, CachedJsonPayload>();
 const idempotencyInFlight = new Map<string, Promise<CachedJsonPayload>>();
-const ADMIN_IMAGE_GALLERY_LIMIT = 200;
-
 const normalizeIdempotencyKey = (raw: string | null) => {
   if (!raw) return "";
   const normalized = raw.trim();
@@ -96,32 +67,6 @@ const getChinaDayRange = () => {
   };
 };
 
-const trimAdminImageGallery = async () => {
-  const staleLogs = await prisma.generationLog.findMany({
-    where: {
-      type: 'IMAGE',
-      success: true,
-      imageUrl: { startsWith: ADMIN_ARCHIVE_ROUTE_PREFIX }
-    },
-    orderBy: { createdAt: 'desc' },
-    skip: ADMIN_IMAGE_GALLERY_LIMIT,
-    select: {
-      id: true,
-      imageUrl: true
-    }
-  });
-
-  for (const log of staleLogs) {
-    await deleteArchivedImage(log.imageUrl).catch(() => {});
-    await prisma.generationLog.update({
-      where: { id: log.id },
-      data: { imageUrl: null }
-    }).catch(() => {});
-  }
-
-  await trimArchiveFiles(ADMIN_IMAGE_GALLERY_LIMIT).catch(() => {});
-};
-
 const normalizeEndpoint = (raw: string | undefined, fallback: string, routeKind: "image" | "video") => {
   if (!raw || typeof raw !== "string") return fallback;
   const trimmed = raw.trim();
@@ -145,6 +90,11 @@ const isImagesGenerationEndpoint = (endpoint: string) => {
   } catch {
     return /\/images\/generations\/?$/i.test(endpoint);
   }
+};
+
+const isGptImage2Model = (model: string | undefined) => {
+  if (!model) return false;
+  return /gpt-image-2/i.test(model);
 };
 
 const isGrokImagineModel = (model: string | undefined) => {
@@ -172,7 +122,7 @@ const validateImageUrl = (url: string): ValidationResult => {
     return {
       valid: false,
       error: {
-        errorCode: ERROR_CODES.IMG_FORMAT_INVALID,
+        errorCode: ErrorCode.VALIDATION_INVALID_IMAGE_URL,
         errorMessage: '请上传有效的图片文件',
         errorDetail: 'URL is empty or invalid',
         shouldRetry: false
@@ -185,7 +135,7 @@ const validateImageUrl = (url: string): ValidationResult => {
     return {
       valid: false,
       error: {
-        errorCode: ERROR_CODES.IMG_FORMAT_INVALID,
+        errorCode: ErrorCode.VALIDATION_INVALID_IMAGE_URL,
         errorMessage: '请上传有效的图片文件',
         errorDetail: 'URL must start with http://, https:// or data:',
         shouldRetry: false
@@ -199,7 +149,7 @@ const validateImageUrl = (url: string): ValidationResult => {
       return {
         valid: false,
         error: {
-          errorCode: ERROR_CODES.IMG_FORMAT_INVALID,
+          errorCode: ErrorCode.VALIDATION_INVALID_IMAGE_URL,
           errorMessage: '请上传有效的图片文件',
           errorDetail: 'Data URL is not an image',
           shouldRetry: false
@@ -218,7 +168,7 @@ const validateImageUrl = (url: string): ValidationResult => {
     return {
       valid: false,
       error: {
-        errorCode: ERROR_CODES.IMG_FORMAT_INVALID,
+        errorCode: ErrorCode.VALIDATION_INVALID_IMAGE_URL,
         errorMessage: '请上传有效的图片文件',
         errorDetail: 'Invalid URL format',
         shouldRetry: false
@@ -252,7 +202,7 @@ const validateImageSize = async (url: string, maxSizeMB: number = 10): Promise<V
         return {
           valid: false,
           error: {
-            errorCode: ERROR_CODES.IMG_SIZE_EXCEEDED,
+            errorCode: ErrorCode.VALIDATION_IMAGE_TOO_LARGE,
             errorMessage: `图片大小超过限制（最大${maxSizeMB}MB）`,
             errorDetail: `Image size ${sizeInMB.toFixed(2)}MB exceeds limit ${maxSizeMB}MB`,
             shouldRetry: false
@@ -266,110 +216,6 @@ const validateImageSize = async (url: string, maxSizeMB: number = 10): Promise<V
     // 验证失败不影响后续处理，返回valid: true让后续流程处理
     return { valid: true };
   }
-};
-
-const extractApiErrorMessage = (status: number, responseText: string): ErrorResponse => {
-  // 检测图片上传失败
-  if (responseText.includes('AssetsUploadReverse') ||
-      responseText.includes('Upload failed') ||
-      responseText.includes('upstream_error')) {
-    return {
-      errorCode: ERROR_CODES.IMG_URL_ACCESS_FAILED,
-      errorMessage: '图片上传失败，请尝试使用其他图片或稍后再试',
-      errorDetail: `Image upload failed: ${responseText}`,
-      shouldRetry: true
-    };
-  }
-
-  // 检测Cloudflare验证挑战
-  if (responseText.includes('cf-browser-verification') ||
-      responseText.includes('cf-turnstile') ||
-      responseText.includes('Cloudflare') ||
-      responseText.includes('challenge-platform')) {
-    return {
-      errorCode: ERROR_CODES.CF_CHALLENGE_REQUIRED,
-      errorMessage: '请求被安全系统拦截，请稍后再试',
-      errorDetail: `Cloudflare challenge detected. Status: ${status}`,
-      shouldRetry: false
-    };
-  }
-
-  // 检测配额耗尽
-  if (isQuotaExhaustedError(status, responseText)) {
-    return {
-      errorCode: ERROR_CODES.API_QUOTA_EXCEEDED,
-      errorMessage: '服务暂时不可用，请稍后再试',
-      errorDetail: `Quota exhausted. Status: ${status}`,
-      shouldRetry: false
-    };
-  }
-
-  // 检测超时错误
-  if (status === 504 || responseText.includes('timeout') || responseText.includes('ETIMEDOUT')) {
-    return {
-      errorCode: ERROR_CODES.API_TIMEOUT,
-      errorMessage: '网络连接超时，请重试',
-      errorDetail: `Request timeout. Status: ${status}`,
-      shouldRetry: true,
-      retryAfter: 5
-    };
-  }
-
-  // 检测服务器错误
-  if (status >= 500) {
-    return {
-      errorCode: ERROR_CODES.INTERNAL_ERROR,
-      errorMessage: '服务暂时异常，请稍后再试',
-      errorDetail: `Server error ${status}: ${responseText}`,
-      shouldRetry: true
-    };
-  }
-
-  // 解析JSON错误消息
-  if (!responseText) {
-    return {
-      errorCode: ERROR_CODES.INTERNAL_ERROR,
-      errorMessage: '服务暂时异常，请稍后再试',
-      errorDetail: `API Error: ${status}`,
-      shouldRetry: false
-    };
-  }
-
-  try {
-    const parsed = JSON.parse(responseText);
-    const msg =
-      parsed?.error?.message ||
-      parsed?.error?.detail ||
-      parsed?.detail ||
-      parsed?.message ||
-      parsed?.error ||
-      "";
-
-    if (typeof msg === "string" && /content moderation|rejected by content moderation|moderation/i.test(msg)) {
-      return {
-        errorCode: ERROR_CODES.INTERNAL_ERROR,
-        errorMessage: '视频生成失败：内容触发了视频安全审核，请降低尺度或调整描述后重试',
-        errorDetail: `API Error: ${status} - ${msg}`,
-        shouldRetry: false
-      };
-    }
-
-    if (typeof msg === "string" && msg.trim()) {
-      return {
-        errorCode: ERROR_CODES.INTERNAL_ERROR,
-        errorMessage: '服务暂时异常，请稍后再试',
-        errorDetail: `API Error: ${status} - ${msg}`,
-        shouldRetry: false
-      };
-    }
-  } catch {}
-
-  return {
-    errorCode: ERROR_CODES.INTERNAL_ERROR,
-    errorMessage: '服务暂时异常，请稍后再试',
-    errorDetail: `API Error: ${status} - ${responseText.substring(0, 200)}`,
-    shouldRetry: false
-  };
 };
 
 const isRenderableImageRef = (value: unknown): value is string => {
@@ -468,138 +314,6 @@ const ASPECT_RATIO_SIZES: Record<string, { width: number; height: number }> = {
   "2:3": { width: 1024, height: 1792 }  // 映射到 grok2api 支持的最接近尺寸
 };
 
-// 并发请求相关类型定义
-interface ConcurrentResult {
-  success: boolean;
-  data?: any;
-  error?: string;
-  mediaUrl?: string | null;
-  attempt: number;
-}
-
-interface ConcurrentConfig {
-  enabled: boolean;
-  requestCount: number;
-}
-
-interface MergedError {
-  allErrors: string[];
-  primaryError: string;
-}
-
-// 并发请求开关配置（可通过环境变量控制）
-const CONCURRENT_CONFIG: ConcurrentConfig = {
-  enabled: false, // 禁用瀑布流并发请求
-  requestCount: 1 // 单次请求
-};
-
-// 请求包装器函数：将单个请求包装为Promise<ConcurrentResult>
-const wrapSingleRequest = async (
-  doRequest: (payload: any) => Promise<Response>,
-  payload: any,
-  attempt: number,
-  isVideo: boolean,
-  useImagesGenerationApi: boolean,
-  extractMediaUrl: (data: any, isVideo: boolean) => string | null
-): Promise<ConcurrentResult> => {
-  try {
-    const response = await doRequest(payload);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      return {
-        success: false,
-        error: `HTTP ${response.status}: ${errorText.substring(0, 200)}`,
-        attempt
-      };
-    }
-
-    const responseText = await response.text();
-    let data: any;
-
-    try {
-      data = JSON.parse(responseText);
-    } catch {
-      return {
-        success: false,
-        error: 'Invalid JSON response',
-        attempt
-      };
-    }
-
-    const mediaUrl = extractMediaUrl(data, isVideo);
-
-    if (!isVideo && !mediaUrl) {
-      return {
-        success: false,
-        error: 'No image URL found in response',
-        data,
-        attempt
-      };
-    }
-
-    return {
-      success: true,
-      data,
-      mediaUrl,
-      attempt
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-      attempt
-    };
-  }
-};
-
-// 并发请求执行器：同时发起多个请求，返回首个成功结果
-const executeConcurrentRequests = async (
-  doRequest: (payload: any) => Promise<Response>,
-  payload: any,
-  config: ConcurrentConfig,
-  isVideo: boolean,
-  useImagesGenerationApi: boolean,
-  extractMediaUrl: (data: any, isVideo: boolean) => string | null
-): Promise<ConcurrentResult> => {
-  if (!config.enabled || config.requestCount <= 1) {
-    // 未启用并发或请求数为1，执行单次请求
-    return wrapSingleRequest(doRequest, payload, 0, isVideo, useImagesGenerationApi, extractMediaUrl);
-  }
-
-  // 并发发起多个请求
-  const requests = Array.from({ length: config.requestCount }, (_, i) =>
-    wrapSingleRequest(doRequest, payload, i, isVideo, useImagesGenerationApi, extractMediaUrl)
-  );
-
-  // 使用 Promise.race 等待首个成功结果
-  // 但需要特殊处理：如果所有请求都失败，返回合并的错误
-  const results = await Promise.allSettled(requests);
-
-  // 找到首个成功的结果
-  for (const result of results) {
-    if (result.status === 'fulfilled' && result.value.success) {
-      return result.value;
-    }
-  }
-
-  // 所有请求都失败，合并错误信息
-  const errors: string[] = [];
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      errors.push(result.value.error || 'Unknown error');
-    } else {
-      errors.push(result.reason?.message || 'Promise rejected');
-    }
-  }
-
-  return {
-    success: false,
-    error: errors[0],
-    attempt: -1
-  };
-};
-
 export async function POST(req: Request) {
   cleanupExpiredIdempotency();
   const idempotencyKey = normalizeIdempotencyKey(req.headers.get("Idempotency-Key") || req.headers.get("X-Idempotency-Key"));
@@ -644,7 +358,7 @@ export async function POST(req: Request) {
   };
 
   try {
-    const { prompt, image_url, apiKey, apiEndpoint, modelName, mediaType, duration, aspectRatio, isGptImage2Mode } = await req.json();
+    const { prompt, image_url, apiKey, apiEndpoint, modelName, mediaType, duration, aspectRatio } = await req.json();
     const authHeader = req.headers.get('Authorization');
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const decoded = token ? verifyToken(token) : null;
@@ -659,35 +373,24 @@ export async function POST(req: Request) {
     const isVideo = mediaType === "video";
     const videoDuration = Number.isFinite(Number(duration)) ? Math.max(1, Math.min(15, Number(duration))) : 10;
     const isImg2Img = Boolean(image_url) && !isVideo;
-    // GPT-Image-2 模式
-    const isGptImage2 = Boolean(isGptImage2Mode) && !isVideo && !isImg2Img;
-    
-    // 根据是否为GPT-Image-2模式设置默认配置
-    const defaultApiKey = isVideo 
-      ? DEFAULT_TXT2VIDEO_API_KEY 
-      : isGptImage2 
-        ? DEFAULT_GPT_IMAGE2_API_KEY 
-        : (isImg2Img ? DEFAULT_IMG2IMG_API_KEY : DEFAULT_TXT2IMG_API_KEY);
-    const defaultEndpoint = isVideo 
-      ? DEFAULT_TXT2VIDEO_API_ENDPOINT 
-      : isGptImage2 
-        ? DEFAULT_GPT_IMAGE2_API_ENDPOINT 
-        : (isImg2Img ? DEFAULT_IMG2IMG_API_ENDPOINT : DEFAULT_TXT2IMG_API_ENDPOINT);
-    const defaultModel = isVideo 
-      ? DEFAULT_TXT2VIDEO_MODEL_NAME 
-      : isGptImage2 
-        ? DEFAULT_GPT_IMAGE2_MODEL_NAME 
-        : (isImg2Img ? DEFAULT_IMG2IMG_MODEL_NAME : DEFAULT_TXT2IMG_MODEL_NAME);
+    const defaultApiKey = isVideo ? DEFAULT_TXT2VIDEO_API_KEY : (isImg2Img ? DEFAULT_IMG2IMG_API_KEY : DEFAULT_TXT2IMG_API_KEY);
+    const defaultEndpoint = isVideo ? DEFAULT_TXT2VIDEO_API_ENDPOINT : (isImg2Img ? DEFAULT_IMG2IMG_API_ENDPOINT : DEFAULT_TXT2IMG_API_ENDPOINT);
+    const defaultModel = isVideo ? DEFAULT_TXT2VIDEO_MODEL_NAME : (isImg2Img ? DEFAULT_IMG2IMG_MODEL_NAME : DEFAULT_TXT2IMG_MODEL_NAME);
 
     let finalApiKey = isVideo ? defaultApiKey : (apiKey || defaultApiKey);
+    // GPT-Image-2 使用 /v1/chat/completions 格式，不使用 /v1/images/generations
+    const isGpt2Model = modelName && isGptImage2Model(modelName);
     const finalEndpoint = isVideo
       ? defaultEndpoint
-      : normalizeEndpoint(apiEndpoint, defaultEndpoint, "image");
+      : (isGpt2Model 
+         ? (apiEndpoint?.endsWith('/v1') ? `${apiEndpoint}/chat/completions` : apiEndpoint || defaultEndpoint)
+         : normalizeEndpoint(apiEndpoint, defaultEndpoint, "image"));
     const finalModel = isVideo ? DEFAULT_TXT2VIDEO_MODEL_NAME : (modelName || defaultModel);
     // 如果是图生图且用户没有指定模型，强制使用图生图专用模型
     const actualModel = isImg2Img && !modelName ? DEFAULT_IMG2IMG_MODEL_NAME : finalModel;
-    const useImagesGenerationApi = !isVideo && isImagesGenerationEndpoint(finalEndpoint);
-    const canAutoSwitchImageKey = !apiKey && !isVideo && !isGptImage2 && useImagesGenerationApi;
+    // GPT-Image-2 使用 chat/completions 格式
+    const useImagesGenerationApi = !isVideo && !isGpt2Model && isImagesGenerationEndpoint(finalEndpoint);
+    const canAutoSwitchImageKey = !apiKey && !isVideo && useImagesGenerationApi;
     if (canAutoSwitchImageKey) {
       const { start, end } = getChinaDayRange();
       const todayAutoImageCount = await prisma.generationLog.count({
@@ -700,23 +403,6 @@ export async function POST(req: Request) {
       });
       finalApiKey = todayAutoImageCount < FREE_IMG_DAILY_LIMIT ? DEFAULT_FREE_IMG_API_KEY : DEFAULT_BACKUP_IMG_API_KEY;
     }
-    
-    // GPT-Image-2 每日限额检查
-    if (isGptImage2 && !apiKey) {
-      const { start, end } = getChinaDayRange();
-      const todayGptImage2Count = await prisma.generationLog.count({
-        where: {
-          type: "IMAGE",
-          success: true,
-          createdAt: { gte: start, lt: end },
-          model: DEFAULT_GPT_IMAGE2_MODEL_NAME
-        }
-      });
-      if (todayGptImage2Count >= GPT_IMAGE2_DAILY_LIMIT) {
-        return respond({ error: `GPT-Image-2 今日额度已用完（每天${GPT_IMAGE2_DAILY_LIMIT}次），明天再来吧！` }, 429);
-      }
-    }
-    
     const aspectKey = typeof aspectRatio === "string" ? aspectRatio.trim() : "";
     const aspectSize = !isVideo && aspectKey && ASPECT_RATIO_SIZES[aspectKey] ? ASPECT_RATIO_SIZES[aspectKey] : null;
     const finalPrompt = aspectSize
@@ -776,14 +462,16 @@ export async function POST(req: Request) {
 
     // 构建请求，增加超时控制
     // 优化：根据不同场景设置不同超时时间
-    const getTimeout = (isVideo: boolean, isImg2Img: boolean, isGptImage2: boolean) => {
+    // GPT-Image-2 模型响应较慢，增加超时到 180 秒
+    const isGptImage2Model = modelName && /gpt-image-2/i.test(modelName);
+    const getTimeout = (isVideo: boolean, isImg2Img: boolean) => {
       if (isVideo) return VIDEO_MAX_WAIT_MS;
       if (isImg2Img) return 60000; // 图生图：60秒
-      if (isGptImage2) return 180000; // GPT-Image-2：180秒（3分钟）
+      if (isGptImage2Model) return 180000; // GPT-Image-2：180秒（3分钟）
       return 45000; // 文生图：45秒
     };
     const controller = new AbortController();
-    const timeoutMs = getTimeout(isVideo, isImg2Img, isGptImage2);
+    const timeoutMs = getTimeout(isVideo, isImg2Img);
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
@@ -852,8 +540,15 @@ export async function POST(req: Request) {
               responseText: startText.slice(0, 2000)
             }
           });
-          const errorResponse = extractApiErrorMessage(startResponse.status, startText);
-          return respond({ error: errorResponse.errorMessage }, startResponse.status || 500);
+          const error = parseApiError(startResponse.status, startText);
+          logErrorAsync(error, {
+            userId: user?.id,
+            userEmail: user?.email,
+            model: actualModel,
+            endpoint: finalEndpoint,
+            requestPrompt: String(finalPrompt).slice(0, 2000)
+          });
+          return respond({ error: error.message }, startResponse.status || 500);
         }
 
         let startData: any;
@@ -948,8 +643,15 @@ export async function POST(req: Request) {
                 responseText: pollText.slice(0, 2000)
               }
             });
-            const errorResponse = extractApiErrorMessage(pollResponse.status, pollText);
-            return respond({ error: errorResponse.errorMessage }, pollResponse.status || 500);
+            const error = parseApiError(pollResponse.status, pollText);
+            logErrorAsync(error, {
+              userId: user?.id,
+              userEmail: user?.email,
+              model: actualModel,
+              endpoint: statusEndpoint,
+              requestPrompt: String(finalPrompt).slice(0, 2000)
+            });
+            return respond({ error: error.message }, pollResponse.status || 500);
           }
 
           let pollData: any;
@@ -1081,11 +783,11 @@ export async function POST(req: Request) {
               // 记录错误日志
               await prisma.generationLog.create({
                 data: {
-                  type: ERROR_CODES.IMG_URL_ACCESS_FAILED,
+                  type: ErrorCode.VALIDATION_INVALID_IMAGE_URL,
                   success: false,
                   errorMessage: '无法获取参考图片，请检查图片链接',
                   responseText: JSON.stringify({
-                    errorCode: ERROR_CODES.IMG_URL_ACCESS_FAILED,
+                    errorCode: ErrorCode.VALIDATION_INVALID_IMAGE_URL,
                     errorDetail: `HTTP ${imgRes.status}: ${imgRes.statusText}`,
                     imageUrl: image_url
                   })
@@ -1105,11 +807,11 @@ export async function POST(req: Request) {
               clearTimeout(imgTimeoutId);
               await prisma.generationLog.create({
                 data: {
-                  type: ERROR_CODES.IMG_SIZE_EXCEEDED,
+                  type: ErrorCode.VALIDATION_IMAGE_TOO_LARGE,
                   success: false,
                   errorMessage: `图片大小超过限制（最大${maxSizeMB}MB）`,
                   responseText: JSON.stringify({
-                    errorCode: ERROR_CODES.IMG_SIZE_EXCEEDED,
+                    errorCode: ErrorCode.VALIDATION_IMAGE_TOO_LARGE,
                     errorDetail: `Image size ${sizeInMB.toFixed(2)}MB exceeds limit ${maxSizeMB}MB`,
                     imageUrl: image_url
                   })
@@ -1128,7 +830,7 @@ export async function POST(req: Request) {
 
             // 判断是否为超时错误
             const isTimeout = e instanceof Error && e.name === 'AbortError';
-            const errorCode = isTimeout ? ERROR_CODES.IMG_LOAD_TIMEOUT : ERROR_CODES.IMG_URL_ACCESS_FAILED;
+            const errorCode = isTimeout ? ErrorCode.API_TIMEOUT : ErrorCode.VALIDATION_INVALID_IMAGE_URL;
             const errorMessage = isTimeout ? '图片加载超时，请重试' : '无法获取参考图片，请检查图片链接';
 
             // 记录错误日志
@@ -1278,81 +980,9 @@ export async function POST(req: Request) {
       let badGatewayRetryCount = 0;
       const maxBadGatewayRetry = 3; // Allow up to 3 retries for 502/Bad Gateway errors
 
-      // 使用并发请求逻辑（仅对图片生成启用，视频生成保持原有逻辑）
-      if (!isVideo && CONCURRENT_CONFIG.enabled) {
-        const concurrentResult = await executeConcurrentRequests(
-          doRequest,
-          activePayload,
-          CONCURRENT_CONFIG,
-          isVideo,
-          useImagesGenerationApi,
-          extractMediaUrl
-        );
+      response = await doRequest(activePayload);
 
-        if (concurrentResult.success) {
-          finalData = concurrentResult.data;
-          mediaUrl = concurrentResult.mediaUrl || null;
-        } else {
-          lastErrorText = concurrentResult.error || 'Unknown error';
-          // 如果并发请求失败，回退到原有的重试逻辑
-          response = await doRequest(activePayload);
-        }
-      } else {
-        // 原有的单次请求逻辑（视频生成或并发未启用时使用）
-        response = await doRequest(activePayload);
-      }
-
-      // 如果并发请求成功，跳过重试循环
-      if (finalData && mediaUrl) {
-        // 直接跳转到成功处理逻辑
-        clearTimeout(timeoutId);
-
-        const responseText = String(finalData?.choices?.[0]?.message?.content ?? '').slice(0, 2000);
-        const savedLog = await prisma.generationLog.create({
-          data: {
-            type: isVideo ? 'VIDEO' : 'IMAGE',
-            userId: user?.id ?? null,
-            userEmail: user?.email ?? null,
-            model: activeModel,
-            endpoint: finalEndpoint,
-            requestPrompt: String(finalPrompt).slice(0, 2000),
-            imageUrl: mediaUrl ? String(mediaUrl).slice(0, 2000) : null,
-            responseText,
-            success: true
-          }
-        });
-        if (!isVideo && mediaUrl) {
-          const archivedUrl = await archiveImageForAdmin(String(mediaUrl)).catch(() => null);
-          if (archivedUrl) {
-            await prisma.generationLog.update({
-              where: { id: savedLog.id },
-              data: { imageUrl: archivedUrl }
-            }).catch(() => {});
-            await trimAdminImageGallery().catch(() => {});
-          }
-        }
-
-        // 生成成功后，如果使用的是默认 Key，则更新用户的限制数据
-        if (!apiKey) {
-          if (authHeader) {
-            if (decoded && decoded.userId) {
-              await prisma.user.update({
-                where: { id: decoded.userId },
-                data: {
-                  imageCount: { increment: 1 },
-                  dailyImageCount: { increment: 1 },
-                  lastImageGeneratedAt: new Date(),
-                  lastDailyReset: new Date() // 确保日期更新
-                }
-              });
-            }
-          }
-        }
-
-        return respond(buildImageClientPayload(finalData, mediaUrl!, actualModel, activeModel), 200);
-      }
-
-      // 原有的重试逻辑（作为fallback）
+      // 重试逻辑
       for (let attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0 || !response) {
           response = await doRequest(activePayload);
@@ -1498,23 +1128,16 @@ export async function POST(req: Request) {
 
       if (!response || !response.ok) {
           const errorText = lastErrorText || "";
-          console.error("API Error Response:", errorText);
-          await prisma.generationLog.create({
-            data: {
-              type: isVideo ? 'VIDEO' : 'IMAGE',
-              userId: user?.id ?? null,
-              userEmail: user?.email ?? null,
-              model: activeModel,
-              endpoint: finalEndpoint,
-              requestPrompt: String(finalPrompt).slice(0, 2000),
-              success: false,
-              errorMessage: `API Error: ${response?.status ?? 0}`,
-              responseText: errorText.slice(0, 2000)
-            }
-          });
           const status = response?.status ?? 0;
-          const errorResponse = extractApiErrorMessage(status, errorText);
-          return respond({ error: errorResponse.errorMessage }, status || 500);
+          const error = parseApiError(status, errorText);
+          logErrorAsync(error, {
+            userId: user?.id,
+            userEmail: user?.email,
+            model: activeModel,
+            endpoint: finalEndpoint,
+            requestPrompt: String(finalPrompt).slice(0, 2000)
+          });
+          return respond({ error: error.message }, status || 500);
       }
 
       if (!finalData) {
@@ -1522,7 +1145,7 @@ export async function POST(req: Request) {
       }
 
       const responseText = String(finalData?.choices?.[0]?.message?.content ?? '').slice(0, 2000);
-      const savedLog = await prisma.generationLog.create({
+      await prisma.generationLog.create({
         data: {
           type: isVideo ? 'VIDEO' : 'IMAGE',
           userId: user?.id ?? null,
@@ -1535,16 +1158,6 @@ export async function POST(req: Request) {
           success: true
         }
       });
-      if (!isVideo && mediaUrl) {
-        const archivedUrl = await archiveImageForAdmin(String(mediaUrl)).catch(() => null);
-        if (archivedUrl) {
-          await prisma.generationLog.update({
-            where: { id: savedLog.id },
-            data: { imageUrl: archivedUrl }
-          }).catch(() => {});
-          await trimAdminImageGallery().catch(() => {});
-        }
-      }
       
       // 生成成功后，如果使用的是默认 Key，则更新用户的限制数据
       if (!apiKey) {
@@ -1572,37 +1185,17 @@ export async function POST(req: Request) {
     } catch (fetchError: any) {
       clearTimeout(timeoutId);
       if (fetchError.name === 'AbortError') {
-        return respond({ 
-          error: isVideo 
-            ? "视频生成超时，请稍后重试" 
-            : isGptImage2 
-              ? "GPT-Image-2 请求超时：该模型响应较慢，请耐心等待或稍后重试。" 
-              : "API Request Timeout (90s)" 
-        }, 504);
+        return respond({ error: isVideo ? "视频生成超时，请稍后重试" : "API Request Timeout (90s)" }, 504);
       }
       throw fetchError;
     }
 
   } catch (error: any) {
-    console.error("Image Generation API Error:", error);
-
-    // 记录详细错误日志到数据库（异步，不阻塞响应）
-    prisma.generationLog.create({
-      data: {
-        type: ERROR_CODES.INTERNAL_ERROR,
-        success: false,
-        errorMessage: '服务暂时异常，请稍后再试',
-        responseText: JSON.stringify({
-          errorCode: ERROR_CODES.INTERNAL_ERROR,
-          errorDetail: error instanceof Error ? error.message : String(error),
-          errorStack: error instanceof Error ? error.stack : undefined,
-          timestamp: new Date().toISOString()
-        })
-      }
-    }).catch(logError => {
-      console.error("Failed to log error to database:", logError);
-    });
-
-    return respond({ error: '服务暂时异常，请稍后再试' }, 500);
+    const err = buildErrorResponse(
+      ErrorCode.SYSTEM_INTERNAL_ERROR,
+      error instanceof Error ? error.message : String(error)
+    );
+    logErrorAsync(err, {});
+    return respond({ error: err.message }, err.statusCode);
   }
 }
