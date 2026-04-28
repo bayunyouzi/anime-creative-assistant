@@ -41,6 +41,12 @@ const DEFAULT_TXT2IMG_API_KEY = DEFAULT_GROK2API_KEY;
 const DEFAULT_TXT2IMG_API_ENDPOINT = DEFAULT_GROK2API_ENDPOINT;
 const DEFAULT_TXT2IMG_MODEL_NAME = DEFAULT_GROK2API_MODEL_NAME;
 
+// GPT-Image-2 模型配置
+const DEFAULT_GPT_IMAGE2_API_KEY = "f5f8dc3f65454077b2fd6560";
+const DEFAULT_GPT_IMAGE2_API_ENDPOINT = "https://gpt2.zeabur.app/v1";
+const DEFAULT_GPT_IMAGE2_MODEL_NAME = "gpt-image-2";
+const GPT_IMAGE2_DAILY_LIMIT = 50;
+
 const DEFAULT_IMG2IMG_API_KEY = DEFAULT_GROK2API_KEY;
 const DEFAULT_IMG2IMG_API_ENDPOINT = DEFAULT_GROK2API_ENDPOINT;
 const DEFAULT_IMG2IMG_MODEL_NAME = "grok-imagine-image-edit";
@@ -638,7 +644,7 @@ export async function POST(req: Request) {
   };
 
   try {
-    const { prompt, image_url, apiKey, apiEndpoint, modelName, mediaType, duration, aspectRatio } = await req.json();
+    const { prompt, image_url, apiKey, apiEndpoint, modelName, mediaType, duration, aspectRatio, isGptImage2Mode } = await req.json();
     const authHeader = req.headers.get('Authorization');
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const decoded = token ? verifyToken(token) : null;
@@ -653,9 +659,25 @@ export async function POST(req: Request) {
     const isVideo = mediaType === "video";
     const videoDuration = Number.isFinite(Number(duration)) ? Math.max(1, Math.min(15, Number(duration))) : 10;
     const isImg2Img = Boolean(image_url) && !isVideo;
-    const defaultApiKey = isVideo ? DEFAULT_TXT2VIDEO_API_KEY : (isImg2Img ? DEFAULT_IMG2IMG_API_KEY : DEFAULT_TXT2IMG_API_KEY);
-    const defaultEndpoint = isVideo ? DEFAULT_TXT2VIDEO_API_ENDPOINT : (isImg2Img ? DEFAULT_IMG2IMG_API_ENDPOINT : DEFAULT_TXT2IMG_API_ENDPOINT);
-    const defaultModel = isVideo ? DEFAULT_TXT2VIDEO_MODEL_NAME : (isImg2Img ? DEFAULT_IMG2IMG_MODEL_NAME : DEFAULT_TXT2IMG_MODEL_NAME);
+    // GPT-Image-2 模式
+    const isGptImage2 = Boolean(isGptImage2Mode) && !isVideo && !isImg2Img;
+    
+    // 根据是否为GPT-Image-2模式设置默认配置
+    const defaultApiKey = isVideo 
+      ? DEFAULT_TXT2VIDEO_API_KEY 
+      : isGptImage2 
+        ? DEFAULT_GPT_IMAGE2_API_KEY 
+        : (isImg2Img ? DEFAULT_IMG2IMG_API_KEY : DEFAULT_TXT2IMG_API_KEY);
+    const defaultEndpoint = isVideo 
+      ? DEFAULT_TXT2VIDEO_API_ENDPOINT 
+      : isGptImage2 
+        ? DEFAULT_GPT_IMAGE2_API_ENDPOINT 
+        : (isImg2Img ? DEFAULT_IMG2IMG_API_ENDPOINT : DEFAULT_TXT2IMG_API_ENDPOINT);
+    const defaultModel = isVideo 
+      ? DEFAULT_TXT2VIDEO_MODEL_NAME 
+      : isGptImage2 
+        ? DEFAULT_GPT_IMAGE2_MODEL_NAME 
+        : (isImg2Img ? DEFAULT_IMG2IMG_MODEL_NAME : DEFAULT_TXT2IMG_MODEL_NAME);
 
     let finalApiKey = isVideo ? defaultApiKey : (apiKey || defaultApiKey);
     const finalEndpoint = isVideo
@@ -665,7 +687,7 @@ export async function POST(req: Request) {
     // 如果是图生图且用户没有指定模型，强制使用图生图专用模型
     const actualModel = isImg2Img && !modelName ? DEFAULT_IMG2IMG_MODEL_NAME : finalModel;
     const useImagesGenerationApi = !isVideo && isImagesGenerationEndpoint(finalEndpoint);
-    const canAutoSwitchImageKey = !apiKey && !isVideo && useImagesGenerationApi;
+    const canAutoSwitchImageKey = !apiKey && !isVideo && !isGptImage2 && useImagesGenerationApi;
     if (canAutoSwitchImageKey) {
       const { start, end } = getChinaDayRange();
       const todayAutoImageCount = await prisma.generationLog.count({
@@ -678,6 +700,23 @@ export async function POST(req: Request) {
       });
       finalApiKey = todayAutoImageCount < FREE_IMG_DAILY_LIMIT ? DEFAULT_FREE_IMG_API_KEY : DEFAULT_BACKUP_IMG_API_KEY;
     }
+    
+    // GPT-Image-2 每日限额检查
+    if (isGptImage2 && !apiKey) {
+      const { start, end } = getChinaDayRange();
+      const todayGptImage2Count = await prisma.generationLog.count({
+        where: {
+          type: "IMAGE",
+          success: true,
+          createdAt: { gte: start, lt: end },
+          model: DEFAULT_GPT_IMAGE2_MODEL_NAME
+        }
+      });
+      if (todayGptImage2Count >= GPT_IMAGE2_DAILY_LIMIT) {
+        return respond({ error: `GPT-Image-2 今日额度已用完（每天${GPT_IMAGE2_DAILY_LIMIT}次），明天再来吧！` }, 429);
+      }
+    }
+    
     const aspectKey = typeof aspectRatio === "string" ? aspectRatio.trim() : "";
     const aspectSize = !isVideo && aspectKey && ASPECT_RATIO_SIZES[aspectKey] ? ASPECT_RATIO_SIZES[aspectKey] : null;
     const finalPrompt = aspectSize
@@ -737,13 +776,14 @@ export async function POST(req: Request) {
 
     // 构建请求，增加超时控制
     // 优化：根据不同场景设置不同超时时间
-    const getTimeout = (isVideo: boolean, isImg2Img: boolean) => {
+    const getTimeout = (isVideo: boolean, isImg2Img: boolean, isGptImage2: boolean) => {
       if (isVideo) return VIDEO_MAX_WAIT_MS;
       if (isImg2Img) return 60000; // 图生图：60秒
+      if (isGptImage2) return 180000; // GPT-Image-2：180秒（3分钟）
       return 45000; // 文生图：45秒
     };
     const controller = new AbortController();
-    const timeoutMs = getTimeout(isVideo, isImg2Img);
+    const timeoutMs = getTimeout(isVideo, isImg2Img, isGptImage2);
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
@@ -1532,7 +1572,13 @@ export async function POST(req: Request) {
     } catch (fetchError: any) {
       clearTimeout(timeoutId);
       if (fetchError.name === 'AbortError') {
-        return respond({ error: isVideo ? "视频生成超时，请稍后重试" : "API Request Timeout (90s)" }, 504);
+        return respond({ 
+          error: isVideo 
+            ? "视频生成超时，请稍后重试" 
+            : isGptImage2 
+              ? "GPT-Image-2 请求超时：该模型响应较慢，请耐心等待或稍后重试。" 
+              : "API Request Timeout (90s)" 
+        }, 504);
       }
       throw fetchError;
     }

@@ -36,6 +36,7 @@ export default function Home() {
   const [isVideoMode, setIsVideoMode] = useState(false);
   const [isTxt2VideoMode, setIsTxt2VideoMode] = useState(false);
   const [isImg2ImgMode, setIsImg2ImgMode] = useState(false); // 新增图生图模式
+  const [isGptImage2Mode, setIsGptImage2Mode] = useState(false); // GPT Image 2 模型切换
   const [uploadedImage, setUploadedImage] = useState<string | null>(null); // 上传图片
   const [img2ImgEffect, setImg2ImgEffect] = useState('random'); // 图生图效果
   const [img2ImgInput, setImg2ImgInput] = useState(""); // 图生图手动需求
@@ -733,8 +734,8 @@ Example Output:
     }
     lastImagePromptRef.current = normalizedPrompt;
     lastImagePromptAtRef.current = now;
-    // 如果没有配置自定义 Image API Key，才进行次数检查
-    if (!imageApiKey) {
+    // 如果没有配置自定义 Image API Key，才进行次数检查（GPT-Image-2模式有自己的限制检查）
+    if (!imageApiKey && !isGptImage2Mode) {
       if (!checkLimit('image')) return;
     }
     imageRequestLockRef.current = true;
@@ -745,10 +746,19 @@ Example Output:
     setImageMeta(null);
     
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 110000);
+    // GPT-Image-2 模式使用更长的超时时间 (180秒)
+    const timeoutId = setTimeout(() => controller.abort(), isGptImage2Mode ? 180000 : 110000);
     
     try {
       const token = localStorage.getItem("auth_token");
+      
+      // GPT-Image-2 模式的API配置
+      const gptImage2Config = isGptImage2Mode ? {
+        apiKey: "f5f8dc3f65454077b2fd6560",
+        apiEndpoint: "https://gpt2.zeabur.app/v1",
+        modelName: "gpt-image-2"
+      } : null;
+      
       const response = await fetch("/api/generate-image", {
         method: "POST",
         headers: {
@@ -760,9 +770,11 @@ Example Output:
           prompt,
           aspectRatio: imageAspectRatio,
           // 将自定义配置传给后端 (使用图片生成专用的配置)
-          apiKey: imageApiKey || undefined,
-          apiEndpoint: imageApiEndpoint || undefined,
-          modelName: imageModelName || undefined
+          apiKey: gptImage2Config?.apiKey || imageApiKey || undefined,
+          apiEndpoint: gptImage2Config?.apiEndpoint || imageApiEndpoint || undefined,
+          modelName: gptImage2Config?.modelName || imageModelName || undefined,
+          // 标记是否为GPT-Image-2模式（用于后端特殊处理）
+          isGptImage2Mode: isGptImage2Mode || undefined
         }),
         signal: controller.signal
       });
@@ -779,7 +791,7 @@ Example Output:
       if (extractedImage) {
         setGeneratedImage(extractedImage);
         setImageMeta(readImageMeta(data));
-        if (!imageApiKey) deductLimit('image');
+        if (!imageApiKey && !isGptImage2Mode) deductLimit('image');
         return;
       }
 
@@ -796,12 +808,16 @@ Example Output:
       let errMsg = err.message || "生成图片失败";
       
       if (err.name === 'AbortError') {
-        errMsg = "⚠️ 请求超时：生图接口响应时间过长，请稍后重试。";
+        errMsg = isGptImage2Mode 
+          ? "⚠️ GPT-Image-2 请求超时：该模型响应较慢，请耐心等待或稍后重试。" 
+          : "⚠️ 请求超时：生图接口响应时间过长，请稍后重试。";
       } else if (errMsg.includes("PROHIBITED_CONTENT") || errMsg.includes("prompt_blocked") || errMsg.includes("content-moderated") || errMsg.includes("content_moderated") || errMsg.includes("Moderated")) {
         // 针对 Gemini/Google/Grok 安全拦截的优化提示
-        errMsg = "⚠️ 生成失败：您的提示词包含敏感/违规内容，触发了模型的安全审查机制。请尝试开启“安全模式”或修改输入词后再试。";
+        errMsg = "⚠️ 生成失败：您的提示词包含敏感/违规内容，触发了模型的安全审查机制。请尝试开启"安全模式"或修改输入词后再试。";
       } else if (errMsg.includes("502") || errMsg.includes("Bad Gateway") || errMsg.includes("JSON") || errMsg.includes("Unexpected token")) {
         errMsg = "⚠️ 上游服务暂时拥堵或返回异常，请稍后再次点击重试。";
+      } else if (isGptImage2Mode && errMsg.includes("quota")) {
+        errMsg = "⚠️ GPT-Image-2 今日额度已用完（每天50次），明天再来吧！";
       }
       
       setError(errMsg);
@@ -940,7 +956,7 @@ Example Output:
 * **RULE SET C - Building/structure:** Ensure **Architectural Integrity** with clear **geometry, materials, and fine details**, all rendered in **sharp focus**.
 
 **Scene Composition (Strictly follow these details):**
-1. **The Model:** The miniature model on a desk or workshop table, rendered in **ultra-sharp detail**, faithfully matching the input subject’s **pose and proportions**.
+1. **The Model:** The miniature model on a desk or workshop table, rendered in **ultra-sharp detail**, faithfully matching the input subject's **pose and proportions**.
 2. **Computer Monitor:** In the background, a monitor displays relevant 3D modeling software, showing the same subject. The screen must be **readable, crisp, not blurry**.
 3. **Environment:** A realistic, well-lit studio or office desk, with details like tools or keyboards, rendered in **professional product photography clarity**.`; 
           break;
@@ -963,7 +979,7 @@ The result must be **sharp, crystal-clear, and professional product photography 
 **Scene Details:**
 1. **The Model:** The miniature figure must be **highly detailed, sharp, and exactly match the pose from the input photo**.
 2. **The Base:** A clean, simple display base.
-3. **The Packaging:** Behind the model, show a collector’s style box featuring the subject.
+3. **The Packaging:** Behind the model, show a collector's style box featuring the subject.
 4. **Environment:** A professional, well-lit indoor studio setting, **sharp focus, no blur, no noise**.`;
           break;
         case 'cosplay': 
@@ -1554,7 +1570,22 @@ The result must be **sharp, crystal-clear, and professional product photography 
                   <div className="flex items-center gap-3"><ImageIcon className="w-4 h-4" /><span className="font-bold text-sm tracking-wide">AI 图生图</span></div>
                   {isImg2ImgMode && <div className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,1)]" />}
                 </button>
+                <button
+                  onClick={() => { setIsGptImage2Mode(!isGptImage2Mode); }}
+                  className={`flex items-center justify-between px-4 py-3.5 rounded-2xl transition-all duration-300 ${isGptImage2Mode ? 'bg-amber-500/10 border border-amber-500/30 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.1)]' : 'hover:bg-white/5 text-zinc-400 border border-transparent'}`}
+                >
+                  <div className="flex items-center gap-3"><Sparkles className="w-4 h-4" /><span className="font-bold text-sm tracking-wide">GPT-Image-2</span></div>
+                  {isGptImage2Mode && <div className="w-1.5 h-1.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,1)]" />}
+                </button>
               </div>
+              {/* GPT-Image-2 提示信息 */}
+              {isGptImage2Mode && (
+                <div className="mt-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
+                  <p className="text-[10px] text-center leading-relaxed font-mono text-amber-400/90 font-bold">
+                    ⚠️ GPT-Image-2 模型每天仅限 <span className="text-amber-300">50</span> 次使用，先到先得！该模型反应较慢，请耐心等待...
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Sub-controls (Safe mode, Characters) */}
@@ -1749,8 +1780,8 @@ The result must be **sharp, crystal-clear, and professional product photography 
               )}
             </div>
             
-            {/* Prompt Results (Moved here) */}
-            {result && !isImg2ImgMode && !isTxt2VideoMode && (
+            {/* Prompt Results (始终显示) */}
+            {!isImg2ImgMode && !isTxt2VideoMode && (
               <div className="bg-white/[0.02] border border-white/[0.05] rounded-[2rem] p-6 md:p-8 backdrop-blur-xl shadow-2xl flex flex-col gap-5 animate-in fade-in slide-in-from-top-4">
                 <h3 className="text-xs font-mono text-zinc-400 tracking-widest uppercase flex items-center gap-2 border-b border-white/5 pb-4">
                   <Wand2 className="w-3.5 h-3.5" /> 生成结果 / Result
@@ -1759,28 +1790,30 @@ The result must be **sharp, crystal-clear, and professional product photography 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 uppercase tracking-widest">
                     <span className="text-indigo-400 flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-indigo-400"></div> 正向提示词</span>
-                    <button onClick={() => copyToClipboard(result.prompt, "prompt")} className="hover:text-white transition-colors bg-white/5 px-3 py-1 rounded-lg">
+                    <button onClick={() => copyToClipboard(result?.prompt || "", "prompt")} className="hover:text-white transition-colors bg-white/5 px-3 py-1 rounded-lg">
                       {copied === "prompt" ? "已复制 ✓" : "复制 / Copy"}
                     </button>
                   </div>
                   <textarea
-                    value={result.prompt}
-                    onChange={(e) => setResult({ ...result, prompt: e.target.value })}
-                    className="w-full p-4 bg-black/40 border border-white/5 rounded-2xl font-mono text-xs leading-relaxed text-indigo-100/90 h-32 resize-none focus:outline-none focus:border-indigo-500/50 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent shadow-inner"
+                    value={result?.prompt || ""}
+                    onChange={(e) => setResult(prev => prev ? { ...prev, prompt: e.target.value } : { prompt: e.target.value, negative_prompt: "" })}
+                    placeholder="在此直接输入或编辑提示词..."
+                    className="w-full p-4 bg-black/40 border border-white/5 rounded-2xl font-mono text-xs leading-relaxed text-indigo-100/90 h-32 resize-none focus:outline-none focus:border-indigo-500/50 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent shadow-inner placeholder-zinc-700"
                   />
                 </div>
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 uppercase tracking-widest">
                     <span className="text-rose-400 flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-rose-400"></div> 负向提示词</span>
-                    <button onClick={() => copyToClipboard(result.negative_prompt, "negative")} className="hover:text-white transition-colors bg-white/5 px-3 py-1 rounded-lg">
+                    <button onClick={() => copyToClipboard(result?.negative_prompt || "", "negative")} className="hover:text-white transition-colors bg-white/5 px-3 py-1 rounded-lg">
                       {copied === "negative" ? "已复制 ✓" : "复制 / Copy"}
                     </button>
                   </div>
                   <textarea
-                    value={result.negative_prompt}
-                    onChange={(e) => setResult({ ...result, negative_prompt: e.target.value })}
-                    className="w-full p-4 bg-black/40 border border-white/5 rounded-2xl font-mono text-xs leading-relaxed text-rose-100/70 h-24 resize-none focus:outline-none focus:border-rose-500/50 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent shadow-inner"
+                    value={result?.negative_prompt || ""}
+                    onChange={(e) => setResult(prev => prev ? { ...prev, negative_prompt: e.target.value } : { prompt: "", negative_prompt: e.target.value })}
+                    placeholder="在此输入负向提示词..."
+                    className="w-full p-4 bg-black/40 border border-white/5 rounded-2xl font-mono text-xs leading-relaxed text-rose-100/70 h-24 resize-none focus:outline-none focus:border-rose-500/50 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent shadow-inner placeholder-zinc-700"
                   />
                 </div>
 
@@ -1860,6 +1893,25 @@ The result must be **sharp, crystal-clear, and professional product photography 
                     {imageLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <ImageIcon className="w-5 h-5" />}
                     {imageLoading ? "图片生成中..." : "一键生成画面"}
                   </button>
+                  {/* GPT-Image-2 一键生成按钮 */}
+                  <button 
+                    onClick={() => {
+                      if (!isGptImage2Mode) {
+                        setIsGptImage2Mode(true);
+                      }
+                      handleGenerateImage(result.prompt);
+                    }}
+                    disabled={imageLoading}
+                    className={`w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-300 flex justify-center items-center gap-3 relative overflow-hidden mt-3 ${imageLoading ? "bg-amber-500/20 text-amber-400/50 cursor-wait border border-amber-500/30" : "bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-white shadow-[0_0_30px_rgba(245,158,11,0.3)] hover:shadow-[0_0_40px_rgba(245,158,11,0.5)] hover:scale-[0.98]"}`}
+                  >
+                    {imageLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />}
+                    {imageLoading ? "图片生成中..." : `GPT-Image-2 生成 ${isGptImage2Mode ? "(已启用)" : ""}`}
+                  </button>
+                  {isGptImage2Mode && (
+                    <p className="text-[10px] text-center text-amber-400/70 mt-2 font-mono">
+                      ⚠️ 每天限50次，该模型响应较慢
+                    </p>
+                  )}
                 </div>
               )}
 
